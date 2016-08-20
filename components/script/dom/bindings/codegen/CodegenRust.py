@@ -3718,7 +3718,7 @@ def getUnionTypeTemplateVars(type, descriptorProvider):
     # Also, for dictionaries we would need to handle conversion of
     # null/undefined to the dictionary correctly.
     if type.isDictionary():
-        raise TypeError("Can't handle dictionaries in unions")
+        raise TypeError("Can't handle dictionaries when failureCode is not None")
 
     if type.isGeckoInterface():
         name = type.inner.identifier.name
@@ -5323,8 +5323,7 @@ class CGDictionary(CGThing):
             "        } else if val.get().is_object() {\n"
             "            val.get().to_object()\n"
             "        } else {\n"
-            "            throw_type_error(cx, \"Value not an object.\");\n"
-            "            return Err(());\n"
+            "            return Ok(ConversionResult::Failure(Cow::Borrowed(\"Value not an object.\")));\n"
             "        };\n"
             "        rooted!(in(cx) let object = object);\n"
             "        Ok(ConversionResult::Success(${selfName} {\n"
@@ -5583,7 +5582,7 @@ class CGBindingRoot(CGThing):
             'dom::bindings::conversions::{ConversionBehavior, DOM_OBJECT_SLOT}',
             'dom::bindings::conversions::{IDLInterface, is_array_like}',
             'dom::bindings::conversions::{FromJSValConvertible, StringificationBehavior}',
-            'dom::bindings::conversions::{ToJSValConvertible, jsid_to_str, native_from_handlevalue}',
+            'dom::bindings::conversions::{ConversionResult, ToJSValConvertible, jsid_to_str, native_from_handlevalue}',
             'dom::bindings::conversions::{native_from_object, private_from_object, root_from_object}',
             'dom::bindings::conversions::{root_from_handleobject, root_from_handlevalue}',
             'dom::bindings::codegen::{PrototypeList, RegisterBindings, UnionTypes}',
@@ -5603,7 +5602,7 @@ class CGBindingRoot(CGThing):
             'libc',
             'util::prefs::PREFS',
             'script_runtime::{store_panic_result, maybe_take_panic_result}',
-            'std::borrow::ToOwned',
+            'std::borrow::{Cow, ToOwned}',
             'std::cmp',
             'std::mem',
             'std::num',
