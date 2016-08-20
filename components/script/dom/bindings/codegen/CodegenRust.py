@@ -727,8 +727,8 @@ def getJSToNativeConversionInfo(type, descriptorProvider, failureCode=None,
             declType = CGWrapper(declType, pre="Option<", post=" >")
 
         templateBody = ("match FromJSValConvertible::from_jsval(cx, ${val}, %s) {\n"
-                        "    Ok(value) => value,\n"
-                        "    Err(()) => { %s },\n"
+                        "    Ok(ConversionResult::Success(value)) => value,\n"
+                        "    _ => { %s },\n"
                         "}" % (config, exceptionCode))
 
         return handleOptional(templateBody, declType, handleDefaultNull("None"))
@@ -739,8 +739,8 @@ def getJSToNativeConversionInfo(type, descriptorProvider, failureCode=None,
             declType = CGWrapper(declType, pre="Option<", post=" >")
 
         templateBody = ("match FromJSValConvertible::from_jsval(cx, ${val}, ()) {\n"
-                        "    Ok(value) => value,\n"
-                        "    Err(()) => { %s },\n"
+                        "    Ok(ConversionResult::Success(value)) => value,\n"
+                        "    _ => { %s },\n"
                         "}" % exceptionCode)
 
         return handleOptional(templateBody, declType, handleDefaultNull("None"))
@@ -810,8 +810,8 @@ def getJSToNativeConversionInfo(type, descriptorProvider, failureCode=None,
 
         conversionCode = (
             "match FromJSValConvertible::from_jsval(cx, ${val}, %s) {\n"
-            "    Ok(strval) => strval,\n"
-            "    Err(_) => { %s },\n"
+            "    Ok(ConversionResult::Success(strval)) => strval,\n"
+            "    _ => { %s },\n"
             "}" % (nullBehavior, exceptionCode))
 
         if defaultValue is None:
@@ -836,8 +836,8 @@ def getJSToNativeConversionInfo(type, descriptorProvider, failureCode=None,
 
         conversionCode = (
             "match FromJSValConvertible::from_jsval(cx, ${val}, ()) {\n"
-            "    Ok(strval) => strval,\n"
-            "    Err(_) => { %s },\n"
+            "    Ok(ConversionResult::Success(strval)) => strval,\n"
+            "    _ => { %s },\n"
             "}" % exceptionCode)
 
         if defaultValue is None:
@@ -862,8 +862,8 @@ def getJSToNativeConversionInfo(type, descriptorProvider, failureCode=None,
 
         conversionCode = (
             "match FromJSValConvertible::from_jsval(cx, ${val}, ()) {\n"
-            "    Ok(strval) => strval,\n"
-            "    Err(_) => { %s },\n"
+            "    Ok(ConversionResult::Success(strval)) => strval,\n"
+            "    _ => { %s },\n"
             "}" % exceptionCode)
 
         if defaultValue is None:
@@ -1017,8 +1017,8 @@ def getJSToNativeConversionInfo(type, descriptorProvider, failureCode=None,
                                CGDictionary.makeDictionaryName(type.inner))
         declType = CGGeneric(typeName)
         template = ("match %s::new(cx, ${val}) {\n"
-                    "    Ok(dictionary) => dictionary,\n"
-                    "    Err(_) => { %s },\n"
+                    "    Ok(ConversionResult::Success(dictionary)) => dictionary,\n"
+                    "    _ => { %s },\n"
                     "}" % (typeName, exceptionCode))
 
         return handleOptional(template, declType, handleDefaultNull("%s::empty(cx)" % typeName))
@@ -1042,8 +1042,8 @@ def getJSToNativeConversionInfo(type, descriptorProvider, failureCode=None,
 
     template = (
         "match FromJSValConvertible::from_jsval(cx, ${val}, %s) {\n"
-        "    Ok(v) => v,\n"
-        "    Err(_) => { %s }\n"
+        "    Ok(ConversionResult::Success(v)) => v,\n"
+        "    _ => { %s }\n"
         "}" % (conversionBehavior, exceptionCode))
 
     if defaultValue is not None:
@@ -2048,6 +2048,7 @@ def UnionTypes(descriptors, dictionaries, callbacks, config):
 
     imports = [
         'dom::bindings::codegen::PrototypeList',
+        'dom::bindings::conversions::ConversionResult',
         'dom::bindings::conversions::FromJSValConvertible',
         'dom::bindings::conversions::ToJSValConvertible',
         'dom::bindings::conversions::ConversionBehavior',
@@ -3717,7 +3718,7 @@ def getUnionTypeTemplateVars(type, descriptorProvider):
     # Also, for dictionaries we would need to handle conversion of
     # null/undefined to the dictionary correctly.
     if type.isDictionary():
-        raise TypeError("Can't handle dictionaries in unions")
+        raise TypeError("Can't handle dictionaries when failureCode is not None")
 
     if type.isGeckoInterface():
         name = type.inner.identifier.name
@@ -3826,7 +3827,7 @@ class CGUnionConversionStruct(CGThing):
             return (
                 "match %s::TryConvertTo%s(cx, value) {\n"
                 "    Err(_) => return Err(()),\n"
-                "    Ok(Some(value)) => return Ok(%s::%s(value)),\n"
+                "    Ok(Some(value)) => return Ok(ConversionResult::Success(%s::%s(value))),\n"
                 "    Ok(None) => (),\n"
                 "}\n") % (self.type, name, self.type, name)
 
@@ -3923,7 +3924,8 @@ class CGUnionConversionStruct(CGThing):
         method = CGWrapper(
             CGIndenter(CGList(conversions, "\n\n")),
             pre="unsafe fn from_jsval(cx: *mut JSContext,\n"
-                "                     value: HandleValue, _option: ()) -> Result<%s, ()> {\n" % self.type,
+                "                     value: HandleValue, _option: ())"
+                "                     -> Result<ConversionResult<%s>, ()> {\n" % self.type,
             post="\n}")
         return CGWrapper(
             CGIndenter(CGList([
@@ -5271,9 +5273,12 @@ class CGDictionary(CGThing):
     def impl(self):
         d = self.dictionary
         if d.parent:
-            initParent = "parent: try!(%s::%s::new(cx, val)),\n" % (
+            initParent = ("parent: match try!(%s::%s::new(cx, val)) {\n"
+                          "            ConversionResult::Success(v) => v,\n"
+                          "            _ => return Err(()),\n"
+                          "        },\n" % (
                 self.makeModuleName(d.parent),
-                self.makeClassName(d.parent))
+                self.makeClassName(d.parent)))
         else:
             initParent = ""
 
@@ -5307,29 +5312,31 @@ class CGDictionary(CGThing):
         return string.Template(
             "impl ${selfName} {\n"
             "    pub unsafe fn empty(cx: *mut JSContext) -> ${selfName} {\n"
-            "        ${selfName}::new(cx, HandleValue::null()).unwrap()\n"
+            "        match ${selfName}::new(cx, HandleValue::null()) {\n"
+            "            Ok(ConversionResult::Success(v)) => v,\n"
+            "            _ => unreachable!(),\n"
+            "        }\n"
             "    }\n"
-            "    pub unsafe fn new(cx: *mut JSContext, val: HandleValue) -> Result<${selfName}, ()> {\n"
+            "    pub unsafe fn new(cx: *mut JSContext, val: HandleValue) -> Result<ConversionResult<${selfName}>, ()> {\n"
             "        let object = if val.get().is_null_or_undefined() {\n"
             "            ptr::null_mut()\n"
             "        } else if val.get().is_object() {\n"
             "            val.get().to_object()\n"
             "        } else {\n"
-            "            throw_type_error(cx, \"Value not an object.\");\n"
-            "            return Err(());\n"
+            "            return Ok(ConversionResult::Failure(Cow::Borrowed(\"Value not an object.\")));\n"
             "        };\n"
             "        rooted!(in(cx) let object = object);\n"
-            "        Ok(${selfName} {\n"
+            "        Ok(ConversionResult::Success(${selfName} {\n"
             "${initParent}"
             "${initMembers}"
-            "        })\n"
+            "        }))\n"
             "    }\n"
             "}\n"
             "\n"
             "impl FromJSValConvertible for ${selfName} {\n"
             "    type Config = ();\n"
             "    unsafe fn from_jsval(cx: *mut JSContext, value: HandleValue, _option: ())\n"
-            "                         -> Result<${selfName}, ()> {\n"
+            "                         -> Result<ConversionResult<${selfName}>, ()> {\n"
             "        ${selfName}::new(cx, value)\n"
             "    }\n"
             "}\n"
@@ -5575,7 +5582,7 @@ class CGBindingRoot(CGThing):
             'dom::bindings::conversions::{ConversionBehavior, DOM_OBJECT_SLOT}',
             'dom::bindings::conversions::{IDLInterface, is_array_like}',
             'dom::bindings::conversions::{FromJSValConvertible, StringificationBehavior}',
-            'dom::bindings::conversions::{ToJSValConvertible, jsid_to_str, native_from_handlevalue}',
+            'dom::bindings::conversions::{ConversionResult, ToJSValConvertible, jsid_to_str, native_from_handlevalue}',
             'dom::bindings::conversions::{native_from_object, private_from_object, root_from_object}',
             'dom::bindings::conversions::{root_from_handleobject, root_from_handlevalue}',
             'dom::bindings::codegen::{PrototypeList, RegisterBindings, UnionTypes}',
@@ -5595,7 +5602,7 @@ class CGBindingRoot(CGThing):
             'libc',
             'util::prefs::PREFS',
             'script_runtime::{store_panic_result, maybe_take_panic_result}',
-            'std::borrow::ToOwned',
+            'std::borrow::{Cow, ToOwned}',
             'std::cmp',
             'std::mem',
             'std::num',
